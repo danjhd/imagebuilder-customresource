@@ -1,0 +1,16 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+
+  AmiLookup:
+    Type: Custom::AmiLookup
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:111122223333:function:CustomResourceAmiLookup'
+      Tags:
+        - Key: CreatedBy
+          Value: EC2 Image Builder
+
+Outputs:
+
+  AmiId:
+    Value: !GetAtt AmiLookup.ImageId
