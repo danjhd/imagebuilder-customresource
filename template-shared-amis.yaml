@@ -288,3 +288,8 @@ Resources:
                     Principal = account
                 )
                 print(add_permission['Statement'])
+
+Outputs:
+
+  CloudWatchLogsUrl:
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/$252Faws$252Flambda$252F${AutomationFunction}'
