@@ -31,11 +31,7 @@ The entire solution will be deployed with a single CloudFormation Stack. Here is
 
 We will deploy the solution using the [AWS CLI](https://aws.amazon.com/cli/)
 
-First you will need to download the correct template from this repository for your use case.
-- [`template-copied-amis.yaml`](https://github.com/danjhd/imagebuilder-customresource/raw/main/template-copied-amis.yaml) for where your Distribution Configuration is setup to **copy** AMIs into the target accounts/regions
-- [`template-shared-amis.yaml`](https://github.com/danjhd/imagebuilder-customresource/raw/main/template-shared-amis.yaml) for where your Distribution Configuration is setup to **share** AMIs into the target accounts/regions
-
-Download the corresponding file above and save it somewhere locally. You will need it a little later.
+First you will need to [download](https://github.com/danjhd/imagebuilder-customresource/raw/main/template.yaml) the template from this repository and save it somewhere locally.You will need it a little later.
 
 Next we need to collect the ARN(s) of the **Distribution Configuration(s)** we wish to automate with this solution. Execute the following (replacing <samp><mark>REGION</mark></samp> with your region of choice):
 
@@ -49,10 +45,10 @@ You should see an output that lists all the **Distribution Configurations** in y
 -----------------------------------------------------------------------------------------</br>|                            ListDistributionConfigurations                             |</br>+------+--------------------------------------------------------------------------------+</br>|  Test|  <b>arn:aws:imagebuilder:eu-west-1:111122223333:distribution-configuration/test</b>   |</br>+------+--------------------------------------------------------------------------------+
 </pre>
 
-We will now create a new CloudFormation stack in the same region as Image Builder. Again we will use the AWS CLI to do this. The command is shown below. You will need to change the <samp><mark>filename</mark></samp> of the yaml template to the one you downloaded, replace <samp><mark>REGION</mark></samp> again and also supply the <samp><mark>ARNs</mark></samp> for your Distribution Configuration(s). Use commas to separate multiple ARNs.
+We will now create a new CloudFormation stack in the same region as Image Builder. Again we will use the AWS CLI to do this. The command is shown below. You will need to change the <samp><mark>REGION</mark></samp> again and also supply the <samp><mark>ARNs</mark></samp> for your Distribution Configuration(s). Use commas to separate multiple ARNs.
 
 <pre>
-aws cloudformation deploy --template-file <mark>template-shared-amis.yaml</mark> --stack-name ImageBuilderAmiLookupCustomResource --parameter-overrides DistributionArns=<mark>arn:aws:imagebuilder:eu-west-1:111122223333:distribution-configuration/test</mark> --capabilities CAPABILITY_IAM --region <mark>REGION</mark>
+aws cloudformation deploy --template-file template.yaml --stack-name ImageBuilderAmiLookupCustomResource --parameter-overrides DistributionArns=<mark>arn:aws:imagebuilder:eu-west-1:111122223333:distribution-configuration/test</mark> --capabilities CAPABILITY_IAM --region <mark>REGION</mark>
 </pre>
 
 The stack creation should take a couple of minutes. Once the stack is created we now have the base infrastructure in place.
@@ -106,10 +102,10 @@ The StackSet has deployed a Lambda function with a hardcoded name `CustomResourc
 
 If you wish to review the actual code for this Lambda function feel free to do so. It is written in Python and should be pretty easy to follow if you "speak Python". In this section we will describe exactly what it does so that it can be understood how it works. This function is written to use the standard format used by a CloudFormation Custom Resource Lambda function. As such it can take input parameters directly from a CloudFormation Template.
 In this case the only parameter used is a `Tags` parameter. This parameter is a list of AWS tags. An example of how to format this is shown later.
-The Lambda function uses the `DescribeImages` API to list the AMIs that have matching tags to those provided in the Parameters. The way it calls the `DescribeImages` API differs slightly depending on which template you deployed above:
-  - `template-copied-amis.yaml` The Lambda function first assumes the IAM Role called `EC2ImageBuilderDistributionCrossAccountRole` [link](https://docs.aws.amazon.com/imagebuilder/latest/userguide/cross-account-dist.html) in the target account before it calls `DescribeImages`. This means that the AMIs the Lambda function returns are ones available in the target account.
-  - `template-shared-amis.yaml` In this scenario an assume role is not needed instead it calls `DescribeImages` in its own account. This is because these AMIs are only shared and so cross account access is not required. This Lambda function also verifies the AMIs returned have been shared with the account to ensure no non-shared AMIs matching the tags will be returned.
-Finally, once it has a list of AMIs the Lambda function finds the most recent one (using `CreationDate`) and returns just that AMI as a JSON object. This in turns gets returned to CloudFormation for us.
+The Lambda function uses the `DescribeImages` API to list the AMIs that have matching tags to those provided in the Parameters. It calls the `DescribeImages` API in two different ways:
+- For *copied* AMIs it first assumes the IAM Role called `EC2ImageBuilderDistributionCrossAccountRole` [link](https://docs.aws.amazon.com/imagebuilder/latest/userguide/cross-account-dist.html) in the target account before it calls `DescribeImages`. This means that the AMIs the Lambda function returns are ones available in the target account.
+- For *shared* AMIs it calls `DescribeImages` in its own account. This is because these AMIs are only shared and so cross account access is not required. This Lambda function also verifies the AMIs returned have been shared with the account to ensure no non-shared AMIs matching the tags will be returned.
+Finally, once it has both lists of AMIs (shared and copied) the Lambda function finds the most recent one (using `CreationDate`) and returns just that AMI as a JSON object. This in turns gets returned to CloudFormation for us.
 
 ### 6 - Consuming the Custom Resource
 

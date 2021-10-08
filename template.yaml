@@ -22,11 +22,13 @@ Resources:
         - CAPABILITY_NAMED_IAM
       TemplateBody: |
         AWSTemplateFormatVersion: 2010-09-09
+
         Resources:
+
           AmiLookupFunctionRole:
             Type: AWS::IAM::Role
             Properties:
-              Description: A role to allow the AmiLookupFunction to Describe AMIs.
+              Description: A role to allow the AmiLookupFunction to assume a cross account role.
               AssumeRolePolicyDocument:
                 Version: 2012-10-17
                 Statement:
@@ -37,6 +39,14 @@ Resources:
               ManagedPolicyArns:
                 - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
               Policies:
+                - PolicyName: AssumeRole
+                  PolicyDocument:
+                    Version: 2012-10-17
+                    Statement:
+                      - Effect: Allow
+                        Action:
+                          - sts:AssumeRole
+                        Resource: 'arn:aws:iam::*:role/EC2ImageBuilderDistributionCrossAccountRole'
                 - PolicyName: DescribeImages
                   PolicyDocument:
                     Version: 2012-10-17
@@ -46,6 +56,7 @@ Resources:
                           - ec2:DescribeImages
                           - ec2:DescribeImageAttribute
                         Resource: '*'
+
           AmiLookupFunction:
             Type: AWS::Lambda::Function
             Properties:
@@ -65,6 +76,7 @@ Resources:
                   import boto3
                   import urllib3
                   from botocore.exceptions import ClientError
+
                   def lambda_handler(event, context):
                       print(json.dumps(event))
                       try:
@@ -72,21 +84,11 @@ Resources:
                           if event['RequestType'] in ['Create','Update']:
                               account_id = event['StackId'].split(':')[4]
                               filters = [{'Name': f"tag:{t['Key']}", 'Values': [t['Value']]} for t in event['ResourceProperties']['Tags']]
-                              ec2 = boto3.client('ec2')
-                              describe_images = ec2.describe_images(
-                                  Filters = filters,
-                                  Owners = [context.invoked_function_arn.split(':')[4]]
-                              )
-                              shared_images = []
-                              if len(describe_images['Images']) != 0:
-                                  for image in describe_images['Images']:
-                                      describe_image_attribute = ec2.describe_image_attribute(
-                                          Attribute = 'launchPermission',
-                                          ImageId = image['ImageId']
-                                      )
-                                      if account_id in [lp['UserId'] for lp in describe_image_attribute['LaunchPermissions']]:
-                                          shared_images.append(image)
-                                  sorted_list = sorted(shared_images, key=lambda k: k['CreationDate'])
+                              shared_images = getSharedImages(context.invoked_function_arn.split(':')[4], account_id, filters)
+                              local_images = getLocalImages(account_id, filters)
+                              combined_images = shared_images + local_images
+                              if len(combined_images) != 0:
+                                  sorted_list = sorted(combined_images, key=lambda k: k['CreationDate'])
                                   response = sorted_list[-1]
                               print(response)
                               cfnresponse(event, context, 'SUCCESS', response, 'AmiLookup')
@@ -95,6 +97,48 @@ Resources:
                       except Exception as ex:
                           cfnresponse(event, context, 'FAILED', None, 'AmiLookup')
                           raise
+
+                  def getSharedImages(owner_id, account_id, filters):
+                      ec2 = boto3.client('ec2')
+                      describe_images = ec2.describe_images(
+                          Filters = filters,
+                          Owners = [owner_id]
+                      )
+                      shared_images = []
+                      if len(describe_images['Images']) != 0:
+                          for image in describe_images['Images']:
+                              describe_image_attribute = ec2.describe_image_attribute(
+                                  Attribute = 'launchPermission',
+                                  ImageId = image['ImageId']
+                              )
+                              if account_id in [lp['UserId'] for lp in describe_image_attribute['LaunchPermissions']]:
+                                  shared_images.append(image)
+                      return shared_images
+
+                  def getLocalImages(account_id, filters):
+                      local_images = []
+                      try:
+                          sts = boto3.client('sts', region_name = os.environ['AWS_REGION'])
+                          assume_role = sts.assume_role(
+                              RoleArn = f"arn:aws:iam::{account_id}:role/EC2ImageBuilderDistributionCrossAccountRole",
+                              RoleSessionName = 'RemoteAdminSession',
+                              DurationSeconds = 900
+                          )
+                          ec2 = boto3.client(
+                              'ec2',
+                              aws_access_key_id = assume_role['Credentials']['AccessKeyId'],
+                              aws_secret_access_key = assume_role['Credentials']['SecretAccessKey'],
+                              aws_session_token = assume_role['Credentials']['SessionToken']
+                          )
+                          describe_images = ec2.describe_images(
+                              Filters = filters,
+                              Owners = [account_id]
+                          )
+                          local_images = describe_images['Images']
+                      except Exception:
+                          pass
+                      return local_images
+
                   def cfnresponse(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False):
                       responseUrl = event['ResponseURL']
                       print(responseUrl)
@@ -184,7 +228,12 @@ Resources:
             if stackset_result:
                 # Loop each region in the Distribution and update the permissions on the Lambda function to match the targetted accounts.
                 for dist in distributions:
-                    UpdateLambdaAccountPermissions('CustomResourceAmiLookup', dist['region'], dist['amiDistributionConfiguration']['launchPermission']['userIds'])
+                  accounts = []
+                  if 'targetAccountIds' in dist['amiDistributionConfiguration']:
+                      accounts.extend(dist['amiDistributionConfiguration']['targetAccountIds'])
+                  if 'launchPermission' in dist['amiDistributionConfiguration']:
+                      accounts.extend(dist['amiDistributionConfiguration']['launchPermission']['userIds'])
+                  UpdateLambdaAccountPermissions('CustomResourceAmiLookup', dist['region'], list(set(accounts)))
 
         def UpdateStackSet(stackset_id, account_id, regions):
             list_stack_instances = cfn.list_stack_instances(
@@ -288,8 +337,3 @@ Resources:
                     Principal = account
                 )
                 print(add_permission['Statement'])
-
-Outputs:
-
-  CloudWatchLogsUrl:
-    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#logsV2:log-groups/log-group/$252Faws$252Flambda$252F${AutomationFunction}'
